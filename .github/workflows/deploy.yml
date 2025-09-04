@@ -1,0 +1,181 @@
+name: Deploy (auto-rollback on failure, no secrets)
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Which service to deploy?'
+        required: true
+        type: choice
+        options: [java, node, python]
+        default: java
+      branch:
+        description: 'Which branch history to use for artifacts?'
+        required: true
+        type: choice
+        options: [main, develop]
+        default: main
+      approve:
+        description: 'Proceed with deployment?'
+        required: true
+        type: choice
+        options: [yes, no]
+        default: yes
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 1) Map service -> CI workflow file + artifact base name
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.map.outputs.artifact_name }}
+      workflow_file: ${{ steps.map.outputs.workflow_file }}
+    steps:
+      - name: Map service to CI workflow & artifact name
+        id: map
+        run: |
+          svc="${{ github.event.inputs.service }}"
+          if [ "$svc" = "java" ]; then
+            echo "artifact_name=java-build" >> $GITHUB_OUTPUT
+            echo "workflow_file=java-ci.yml" >> $GITHUB_OUTPUT
+          elif [ "$svc" = "node" ]; then
+            echo "artifact_name=node-build" >> $GITHUB_OUTPUT
+            echo "workflow_file=node-ci.yml" >> $GITHUB_OUTPUT
+          else
+            echo "artifact_name=python-build" >> $GITHUB_OUTPUT
+            echo "workflow_file=python-ci.yml" >> $GITHUB_OUTPUT
+          fi
+
+  # 2) Find last TWO successful CI runs for that workflow (latest + previous)
+  resolve_runs:
+    needs: [meta]
+    runs-on: ubuntu-latest
+    outputs:
+      latest_run: ${{ steps.pick.outputs.latest_run }}
+      previous_run: ${{ steps.pick.outputs.previous_run }}
+    steps:
+      - name: Locate latest & previous successful CI runs
+        id: pick
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const workflow_id = '${{ needs.meta.outputs.workflow_file }}';
+            const branch = '${{ github.event.inputs.branch }}';
+            const res = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id,
+              status: 'success',
+              branch,
+              per_page: 10
+            });
+            const runs = res.data.workflow_runs
+              .sort((a,b) => b.run_number - a.run_number);
+            if (!runs.length) {
+              core.setFailed(`No successful runs found for ${workflow_id} on ${branch}`);
+              return;
+            }
+            const latest = runs[0];
+            const previous = runs[1]; // may be undefined if only one success so far
+            core.info(`Latest success run: ${latest.run_number}`);
+            core.info(`Previous success run: ${previous?.run_number || 'N/A'}`);
+            core.setOutput('latest_run', String(latest.run_number));
+            core.setOutput('previous_run', previous ? String(previous.run_number) : '');
+
+  # 3) Download the latest successful artifact for the chosen service
+  fetch_latest:
+    needs: [meta, resolve_runs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download latest successful artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_number: ${{ needs.resolve_runs.outputs.latest_run }}
+          name: ${{ needs.meta.outputs.artifact_name }}-${{ needs.resolve_runs.outputs.latest_run }}
+          path: fetched_artifact
+          if_no_artifact_found: fail
+
+      - name: Show latest artifact files
+        run: ls -R fetched_artifact || true
+
+  # 4) Manual approval gate (simple yes/no)
+  gate:
+    needs: [fetch_latest]
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.chk.outputs.proceed }}
+    steps:
+      - name: Check approval
+        id: chk
+        run: |
+          if [ "${{ github.event.inputs.approve }}" = "yes" ]; then
+            echo "proceed=true" >> $GITHUB_OUTPUT
+            echo "Approved: proceeding to deploy."
+          else
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            echo "Not approved: stopping before deploy."
+          fi
+
+  # 5) Attempt deployment with latest artifact (this job FAILS on deploy error)
+  deploy_latest:
+    needs: [gate, meta, resolve_runs]
+    if: ${{ needs.gate.outputs.proceed == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download latest artifact (again in this job)
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_number: ${{ needs.resolve_runs.outputs.latest_run }}
+          name: ${{ needs.meta.outputs.artifact_name }}-${{ needs.resolve_runs.outputs.latest_run }}
+          path: fetched_artifact
+          if_no_artifact_found: fail
+
+      - name: Deploy latest (placeholder)
+        run: |
+          echo "🚀 Deploying '${{ github.event.inputs.service }}' from CI run ${{ needs.resolve_runs.outputs.latest_run }}"
+          echo "Replace this with real deploy commands (helm/kubectl/az webapp/etc)."
+          echo "For demo, we'll simulate a deploy using the artifact:"
+          ls -R fetched_artifact || true
+          # --- BEGIN: replace with real deployment ---
+          # Simulate failure by uncommenting next line to test rollback:
+          # exit 1
+          # --- END ---
+          echo "✅ Latest deployment step completed."
+
+  # 6) If deployment FAILED, rollback to previous successful artifact (if available)
+  rollback:
+    needs: [deploy_latest, meta, resolve_runs]
+    if: ${{ needs.deploy_latest.result == 'failure' && needs.resolve_runs.outputs.previous_run != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download previous successful artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_number: ${{ needs.resolve_runs.outputs.previous_run }}
+          name: ${{ needs.meta.outputs.artifact_name }}-${{ needs.resolve_runs.outputs.previous_run }}
+          path: fetched_artifact_prev
+          if_no_artifact_found: fail
+
+      - name: Deploy rollback (placeholder)
+        run: |
+          echo "⏪ Rolling back '${{ github.event.inputs.service }}' to CI run ${{ needs.resolve_runs.outputs.previous_run }}"
+          echo "Replace this with real rollback deploy commands."
+          ls -R fetched_artifact_prev || true
+          echo "✅ Rollback deployment step completed."
+
+  # 7) If deployment FAILED but no previous success exists, report clearly
+  no_previous_to_rollback:
+    needs: [deploy_latest, resolve_runs]
+    if: ${{ needs.deploy_latest.result == 'failure' && needs.resolve_runs.outputs.previous_run == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: No previous successful artifact to roll back to
+        run: |
+          echo "❌ Deploy failed and no previous successful artifact found to roll back to."
+          exit 1
