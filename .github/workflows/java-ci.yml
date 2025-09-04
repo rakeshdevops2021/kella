@@ -1,0 +1,30 @@
+name: Java CI
+
+on:
+  push:            # Runs on every push
+  pull_request:    # Runs on every pull request
+  workflow_dispatch: # Allows manual run
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build with Maven
+        working-directory: java-app
+        run: mvn -B clean package
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-jar
+          path: java-app/target/*.jar
