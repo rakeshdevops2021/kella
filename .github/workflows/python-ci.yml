@@ -1,0 +1,38 @@
+name: Python CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: python-app
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        working-directory: python-app
+        run: pytest -q
+
+      - name: Package simple artifact
+        run: |
+          mkdir -p python-dist
+          echo "Build successful" > python-dist/output.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-build
+          path: python-dist/**
