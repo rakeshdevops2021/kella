@@ -24,7 +24,10 @@ jobs:
 
       - name: Run tests
         working-directory: python-app
+        env:
+          PYTHONPATH: .
         run: pytest -q
+
 
       - name: Package simple artifact
         run: |
