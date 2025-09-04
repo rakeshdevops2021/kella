@@ -32,11 +32,83 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Setup Node.js with caching IF a lockfile exists ---
-      - name: Setup Node.js (cached)
-        if: ${{ hashFiles('node-app/**/package-lock.json', 'node-app/**/pnpm-lock.yaml', 'node-app/**/yarn.lock') != '' }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-          cache-dep
+
+      # ---------- Install ----------
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "Using npm ci (lockfile found)"
+            npm ci
+          elif [ -f pnpm-lock.yaml ]; then
+            echo "Using pnpm (lockfile found)"
+            npm i -g pnpm
+            pnpm i --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            echo "Using yarn (lockfile found)"
+            npm i -g yarn
+            yarn install --frozen-lockfile
+          else
+            echo "No lockfile found; running npm install"
+            npm install
+          fi
+
+      # ---------- Tests ----------
+      - name: Run tests (if defined)
+        env:
+          JEST_JUNIT_OUTPUT: junit.xml
+        run: |
+          if npm run | grep -qE '^  test'; then
+            npm test --if-present
+          else
+            echo "No test script defined; skipping tests."
+          fi
+
+      # ---------- Build ----------
+      - name: Build (if defined)
+        run: |
+          if npm run | grep -qE '^  build'; then
+            npm run build
+          else
+            echo "No build script found; skipping build."
+          fi
+
+      # ---------- Artifacts ----------
+      - name: Upload build artifact (dist/ or build/)
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-build-${{ github.run_number }}
+          path: |
+            node-app/dist/**
+            node-app/build/**
+            node-app/package.json
+            node-app/package-lock.json
+            node-app/pnpm-lock.yaml
+            node-app/yarn.lock
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload test report (JUnit if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-tests-${{ github.run_number }}
+          path: |
+            node-app/junit.xml
+            node-app/test-results/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload coverage (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-coverage-${{ github.run_number }}
+          path: |
+            node-app/coverage/**
+            node-app/coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 14
