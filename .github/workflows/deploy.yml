@@ -106,10 +106,9 @@ jobs:
         run: ls -R fetched_artifact || true
 
   # --------------------------
-  # 4. Optional Sonar step
-  # - If sonar = no → skip
-  # - If sonar = yes → try Sonar if secrets exist, else log & continue
-  # - This is NON-BLOCKING (deploy continues regardless)
+  # 4. Optional Sonar step (NON-BLOCKING)
+  #    - If sonar = no → skip
+  #    - If sonar = yes → currently only logs a message; real scan is commented below
   # --------------------------
   sonar_optional:
     needs: [fetch_latest]
@@ -118,14 +117,15 @@ jobs:
       - name: Skip Sonar (input=no)
         if: ${{ github.event.inputs.sonar == 'no' }}
         run: echo "Sonar skipped. Continuing to deploy."
+      - name: Sonar requested (secrets not wired here) — continuing
+        if: ${{ github.event.inputs.sonar == 'yes' }}
+        run: |
+          echo "Sonar requested. This workflow is secrets-free, so Sonar is skipped."
+          echo "To enable Sonar later: add SONAR_HOST_URL and SONAR_TOKEN secrets, then uncomment the scan steps below."
 
-      - name: Sonar requested but secrets missing
-        if: ${{ github.event.inputs.sonar == 'yes' && (secrets.SONAR_HOST_URL == '' || secrets.SONAR_TOKEN == '') }}
-        run: echo "Sonar requested but no secrets configured. Skipping Sonar."
-
-      # Uncomment the block below if you add Sonar secrets later
+      # --- Example (commented) Sonar steps — keep commented until you add secrets ---
       # - name: SonarQube Scan (non-blocking)
-      #   if: ${{ github.event.inputs.sonar == 'yes' && secrets.SONAR_HOST_URL != '' && secrets.SONAR_TOKEN != '' }}
+      #   if: ${{ github.event.inputs.sonar == 'yes' }}
       #   continue-on-error: true
       #   uses: sonarsource/sonarqube-scan-action@v2
       #   env:
@@ -161,7 +161,7 @@ jobs:
 
   # --------------------------
   # 6. Attempt deploy (placeholder)
-  # - Replace this with your real deploy commands (helm/kubectl/az/etc.)
+  #    Replace this with your real deploy commands (helm/kubectl/az/etc.)
   # --------------------------
   deploy_latest:
     needs: [gate, meta, resolve_runs]
@@ -181,8 +181,8 @@ jobs:
           ls -R fetched_artifact || true
           # --- Replace with real deploy ---
           # Example: helm upgrade --install <release> ./chart --set image.tag=<tag>
-          # Example: az webapp deploy ...
-          # Example: scp + systemctl restart ...
+          # Example: az webapp deploy --resource-group <rg> --name <app> --src-path fetched_artifact/...
+          # Example: scp fetched_artifact/* user@server:/opt/app && ssh user@server 'systemctl restart app'
           # exit 1   # <- uncomment to simulate failure for testing rollback
           echo "✅ Latest deployment completed."
 
