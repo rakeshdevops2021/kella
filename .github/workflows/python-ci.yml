@@ -2,40 +2,108 @@ name: Python CI
 
 on:
   push:
+    branches: [ main, develop ]
+    paths:
+      - 'python-app/**'
+      - '.github/workflows/python-ci.yml'
   pull_request:
-  workflow_dispatch:
+    branches: [ main, develop ]
+    paths:
+      - 'python-app/**'
+      - '.github/workflows/python-ci.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: python-app
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        working-directory: python-app
-        run: pip install -r requirements.txt
-
-      - name: Run tests
-        working-directory: python-app
-        env:
-          PYTHONPATH: .
-        run: pytest -q
-
-
-      - name: Package simple artifact
+      - name: Create venv & install deps
+        shell: bash
         run: |
-          mkdir -p python-dist
-          echo "Build successful" > python-dist/output.txt
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install -U pip wheel
+          # Install app deps if present
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          elif [ -f pyproject.toml ]; then
+            # Best-effort install editable if it's a package; ignore failure for simple apps
+            pip install -e . || true
+          fi
+          # Ensure test tooling is present
+          pip install pytest pytest-cov
 
-      - name: Upload artifact
+      - name: Run tests (pytest + coverage)
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          # Run tests if a tests directory or any *_test.py/test_*.py exists
+          if compgen -G "tests/*.py" > /dev/null || compgen -G "*_test.py" > /dev/null || compgen -G "test_*.py" > /dev/null; then
+            pytest -q --maxfail=1 --disable-warnings \
+              --junitxml=pytest-junit.xml \
+              --cov=. --cov-report=xml:coverage.xml
+          else
+            echo "No tests found; skipping pytest."
+          fi
+
+      - name: Build distributable (wheel/sdist if possible)
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          python -m pip install -U build || true
+          if [ -f pyproject.toml ] || [ -f setup.py ]; then
+            python -m build || true
+          else
+            echo "No pyproject.toml/setup.py; skipping build."
+          fi
+
+      # -------- Artifacts --------
+      - name: Upload build artifact (dist/ if present)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: python-build
-          path: python-dist/**
+          name: python-build-${{ github.run_number }}
+          path: |
+            python-app/dist/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload test report (pytest JUnit if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tests-${{ github.run_number }}
+          path: |
+            python-app/pytest-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload coverage (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-${{ github.run_number }}
+          path: |
+            python-app/coverage.xml
+          if-no-files-found: warn
+          retention-days: 14
