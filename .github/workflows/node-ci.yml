@@ -30,14 +30,13 @@ jobs:
 
     steps:
       - name: Checkout
-      .uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Setup Node.js (with smart cache)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-          # Use globs so the cache step never errors if a specific lockfile path is missing
           cache-dependency-path: |
             **/package-lock.json
             **/pnpm-lock.yaml
@@ -62,27 +61,19 @@ jobs:
             npm install
           fi
 
-      # ---------- Tests (supports Jest if present) ----------
-      - name: Run tests
+      # ---------- Tests ----------
+      - name: Run tests (if defined)
         env:
-          # If your project has jest-junit installed, this will produce junit.xml
           JEST_JUNIT_OUTPUT: junit.xml
         run: |
           if npm run | grep -qE '^  test'; then
-            # Prefer explicit Jest invocation if present in package.json
-            if node -e "process.exit(!require('./package.json').devDependencies?.jest && !require('./package.json').dependencies?.jest)" 2>/dev/null; then
-              echo "Running Jest (will try to use jest-junit reporter if available)"
-              npx --yes jest --ci --reporters=default --reporters=jest-junit --coverage || npm test --if-present
-            else
-              echo "Running npm test"
-              npm test --if-present
-            fi
+            npm test --if-present
           else
             echo "No test script defined; skipping tests."
           fi
 
       # ---------- Build (optional) ----------
-      - name: Build
+      - name: Build (if defined)
         run: |
           if npm run | grep -qE '^  build'; then
             npm run build
