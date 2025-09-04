@@ -2,36 +2,84 @@ name: Node CI
 
 on:
   push:
+    branches: [ main, develop ]
+    paths:
+      - 'node-app/**'
+      - '.github/workflows/node-ci.yml'
   pull_request:
-  workflow_dispatch:
+    branches: [ main, develop ]
+    paths:
+      - 'node-app/**'
+      - '.github/workflows/node-ci.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: node-app
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: node-app/package-lock.json
 
       - name: Install dependencies
-        working-directory: node-app
-        run: npm install
+        run: npm ci
 
-      - name: Run tests
-        working-directory: node-app
-        run: npm test
+      # ---- Run tests (JUnit + coverage) ----
+      - name: Test (Jest) with JUnit + Coverage
+        env:
+          JEST_JUNIT_OUTPUT: junit.xml
+        run: |
+          npx --yes jest --ci --reporters=default --reporters=jest-junit --coverage || exit 1
 
-      - name: Build project
-        working-directory: node-app
-        run: npm run build
+      # ---- Build (optional; handles typical Node web/backend apps) ----
+      - name: Build
+        run: |
+          if npm run | grep -qE '^  build'; then
+            npm run build
+          else
+            echo "No build script found; skipping 'npm run build'."
+          fi
 
-      - name: Upload build artifact
+      # ---- Artifacts ----
+      - name: Upload build artifact (dist/ or build/)
         uses: actions/upload-artifact@v4
         with:
-          name: node-build
-          path: node-app/dist/**
+          name: node-build-${{ github.run_number }}
+          path: |
+            node-app/dist/**
+            node-app/build/**
+            node-app/package.json
+            node-app/package-lock.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload test reports (JUnit)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-tests-${{ github.run_number }}
+          path: |
+            node-app/junit.xml
+            node-app/test-results/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - na
