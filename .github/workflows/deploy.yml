@@ -37,9 +37,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # --------------------------
-  # 1. Map service -> workflow + artifact base name
-  # --------------------------
   meta:
     runs-on: ubuntu-latest
     outputs:
@@ -61,9 +58,6 @@ jobs:
             echo "workflow_file=python-ci.yml" >> $GITHUB_OUTPUT
           fi
 
-  # --------------------------
-  # 2. Find the latest and previous successful runs for the chosen CI workflow
-  # --------------------------
   resolve_runs:
     needs: [meta]
     runs-on: ubuntu-latest
@@ -80,36 +74,42 @@ jobs:
             const workflow_id = '${{ needs.meta.outputs.workflow_file }}';
             const branch = '${{ github.event.inputs.branch }}';
             const res = await github.rest.actions.listWorkflowRuns({
-              owner, repo, workflow_id,
-              status:'success', branch, per_page:20
+              owner, repo, workflow_id, status:'success', branch, per_page:20
             });
             const runs = res.data.workflow_runs.sort((a,b)=>b.run_number-a.run_number);
             if (!runs.length) { core.setFailed(`No successful runs for ${workflow_id} on ${branch}`); return; }
             core.setOutput('latest_run', String(runs[0].run_number));
             core.setOutput('previous_run', runs[1] ? String(runs[1].run_number) : '');
 
-  # --------------------------
-  # 3. Download the latest artifact (to deploy)
-  # --------------------------
   fetch_latest:
     needs: [meta, resolve_runs]
     runs-on: ubuntu-latest
     steps:
-      - name: Download latest artifact
+      # Try exact artifact name from the CI run (e.g., java-build-15)
+      - name: Download latest artifact (exact name)
+        id: fetch_exact
+        continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
+          workflow: ${{ needs.meta.outputs.workflow_file }}  # constrain to the right workflow file
           run_number: ${{ needs.resolve_runs.outputs.latest_run }}
           name: ${{ needs.meta.outputs.artifact_name }}-${{ needs.resolve_runs.outputs.latest_run }}
           path: fetched_artifact
           if_no_artifact_found: fail
+
+      # Fallback: download any artifacts from that run if exact name wasn't found
+      - name: Download latest artifact (fallback: any)
+        if: ${{ steps.fetch_exact.outcome != 'success' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ${{ needs.meta.outputs.workflow_file }}
+          run_number: ${{ needs.resolve_runs.outputs.latest_run }}
+          path: fetched_artifact
+          if_no_artifact_found: fail
+
       - name: Show files
         run: ls -R fetched_artifact || true
 
-  # --------------------------
-  # 4. Optional Sonar step (NON-BLOCKING)
-  #    - If sonar = no → skip
-  #    - If sonar = yes → currently only logs a message; real scan is commented below
-  # --------------------------
   sonar_optional:
     needs: [fetch_latest]
     runs-on: ubuntu-latest
@@ -121,28 +121,8 @@ jobs:
         if: ${{ github.event.inputs.sonar == 'yes' }}
         run: |
           echo "Sonar requested. This workflow is secrets-free, so Sonar is skipped."
-          echo "To enable Sonar later: add SONAR_HOST_URL and SONAR_TOKEN secrets, then uncomment the scan steps below."
+          echo "To enable later, add SONAR_HOST_URL and SONAR_TOKEN secrets and uncomment scan steps."
 
-      # --- Example (commented) Sonar steps — keep commented until you add secrets ---
-      # - name: SonarQube Scan (non-blocking)
-      #   if: ${{ github.event.inputs.sonar == 'yes' }}
-      #   continue-on-error: true
-      #   uses: sonarsource/sonarqube-scan-action@v2
-      #   env:
-      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      #     SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
-      #   with:
-      #     projectBaseDir: ${{ github.event.inputs.service }}-app
-      #     args: >
-      #       -Dsonar.projectKey=${{ github.event.repository.name }}_${{ github.event.inputs.service }}
-      #       -Dsonar.sources=.
-      #       -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-      #       -Dsonar.python.coverage.reportPaths=coverage.xml
-      #       -Dsonar.java.binaries=target
-
-  # --------------------------
-  # 5. Approval gate (must be yes to deploy)
-  # --------------------------
   gate:
     needs: [sonar_optional]
     runs-on: ubuntu-latest
@@ -159,59 +139,75 @@ jobs:
             echo "Approval not granted. Stopping."
           fi
 
-  # --------------------------
-  # 6. Attempt deploy (placeholder)
-  #    Replace this with your real deploy commands (helm/kubectl/az/etc.)
-  # --------------------------
   deploy_latest:
     needs: [gate, meta, resolve_runs]
     if: ${{ needs.gate.outputs.proceed == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download latest artifact
+      # Try exact-name first; fallback to all if needed (mirror of fetch_latest)
+      - name: Download latest artifact (exact)
+        id: dl_exact
+        continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
+          workflow: ${{ needs.meta.outputs.workflow_file }}
           run_number: ${{ needs.resolve_runs.outputs.latest_run }}
           name: ${{ needs.meta.outputs.artifact_name }}-${{ needs.resolve_runs.outputs.latest_run }}
           path: fetched_artifact
           if_no_artifact_found: fail
+
+      - name: Download latest artifact (fallback: any)
+        if: ${{ steps.dl_exact.outcome != 'success' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ${{ needs.meta.outputs.workflow_file }}
+          run_number: ${{ needs.resolve_runs.outputs.latest_run }}
+          path: fetched_artifact
+          if_no_artifact_found: fail
+
       - name: Deploy latest (replace with real commands)
         run: |
           echo "🚀 Deploying '${{ github.event.inputs.service }}' from run #${{ needs.resolve_runs.outputs.latest_run }}"
           ls -R fetched_artifact || true
           # --- Replace with real deploy ---
-          # Example: helm upgrade --install <release> ./chart --set image.tag=<tag>
-          # Example: az webapp deploy --resource-group <rg> --name <app> --src-path fetched_artifact/...
-          # Example: scp fetched_artifact/* user@server:/opt/app && ssh user@server 'systemctl restart app'
-          # exit 1   # <- uncomment to simulate failure for testing rollback
+          # helm upgrade --install ...
+          # az webapp deploy ...
+          # scp + systemctl restart ...
+          # exit 1   # <- simulate failure to test rollback
           echo "✅ Latest deployment completed."
 
-  # --------------------------
-  # 7. Auto-rollback if deploy failed and previous success exists
-  # --------------------------
   rollback:
     needs: [deploy_latest, meta, resolve_runs]
     if: ${{ needs.deploy_latest.result == 'failure' && needs.resolve_runs.outputs.previous_run != '' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download previous artifact
+      - name: Download previous artifact (exact)
+        id: dl_prev_exact
+        continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
+          workflow: ${{ needs.meta.outputs.workflow_file }}
           run_number: ${{ needs.resolve_runs.outputs.previous_run }}
           name: ${{ needs.meta.outputs.artifact_name }}-${{ needs.resolve_runs.outputs.previous_run }}
           path: fetched_artifact_prev
           if_no_artifact_found: fail
+
+      - name: Download previous artifact (fallback: any)
+        if: ${{ steps.dl_prev_exact.outcome != 'success' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ${{ needs.meta.outputs.workflow_file }}
+          run_number: ${{ needs.resolve_runs.outputs.previous_run }}
+          path: fetched_artifact_prev
+          if_no_artifact_found: fail
+
       - name: Deploy rollback (replace with real commands)
         run: |
           echo "⏪ Rolling back '${{ github.event.inputs.service }}' to run #${{ needs.resolve_runs.outputs.previous_run }}"
           ls -R fetched_artifact_prev || true
           # --- Replace with real rollback deploy ---
-          # Example: helm rollback <release> <revision>
           echo "✅ Rollback completed."
 
-  # --------------------------
-  # 8. If deploy failed and no rollback available
-  # --------------------------
   no_previous_to_rollback:
     needs: [deploy_latest, resolve_runs]
     if: ${{ needs.deploy_latest.result == 'failure' && needs.resolve_runs.outputs.previous_run == '' }}
