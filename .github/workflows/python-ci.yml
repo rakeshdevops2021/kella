@@ -43,21 +43,24 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install -U pip wheel
-          # Install app deps if present
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           elif [ -f pyproject.toml ]; then
-            # Best-effort install editable if it's a package; ignore failure for simple apps
+            # Editable install if package metadata exists (ignore failure for simple apps)
             pip install -e . || true
           fi
-          # Ensure test tooling is present
           pip install pytest pytest-cov
+
+      # ✅ Make both project root and src/ importable: fixes "No module named 'app'"
+      - name: Set PYTHONPATH
+        shell: bash
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/python-app:$GITHUB_WORKSPACE/python-app/src" >> $GITHUB_ENV
 
       - name: Run tests (pytest + coverage)
         shell: bash
         run: |
           source .venv/bin/activate
-          # Run tests if a tests directory or any *_test.py/test_*.py exists
           if compgen -G "tests/*.py" > /dev/null || compgen -G "*_test.py" > /dev/null || compgen -G "test_*.py" > /dev/null; then
             pytest -q --maxfail=1 --disable-warnings \
               --junitxml=pytest-junit.xml \
